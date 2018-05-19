@@ -14,6 +14,7 @@ from PIL import ImageFont
 from Adafruit_SHT31 import *
 
 from luma.core.render import canvas
+from luma.core.virtual import viewport
 from luma.core.interface.serial import spi
 from luma.oled.device import ssd1306
 
@@ -22,14 +23,6 @@ flowers2_string = "A"
 flowers2_string = "z"
 text_string = "I love you, mom!"
 
-class Text:
-    def __init__(self, text, draw, font):
-        self.draw = draw
-        self.text = text
-        self.font = font
-        self.w, self.h = draw.textsize(text=text, font=font)
-    def paint(self, x, y):
-        self.draw.text((x,y), text=self.text, font=self.font, fill="white")
 
 butterfly_font_file="ButterFly.ttf"
 flower_font_file="JandaFlowerDoodles.ttf"
@@ -49,39 +42,56 @@ def main(num_iterations=sys.maxsize):
     dh = device.height
     dw = device.width
 
+    class Text:
+        def __init__(self, text, font):
+            self.text = text
+            self.font = font
+            with canvas(device) as draw:
+                self.w, self.h = draw.textsize(text=text, font=font)
+        def paint(self):
+            return {'text':self.text, 'font':self.font, 'fill':"white"}
+
     flower_font = make_font(flower_font_file, 44)
     butterfly_font = make_font(butterfly_font_file, 44)
     status_font = make_font(status_font_file, 20)
-    font = make_font(font_file, 44)
+    font = make_font(font_file, 30)
+
+
+    degrees = sensor.read_temperature()
+    humidity = sensor.read_humidity()
+    #stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format((degrees*9/5+32), humidity), status_font)
+    stat = Text('{0} {1:0.1f}ºF, {2:0.1f}%'.format(time.strftime('%H:%M:%S'), (degrees*9/5+32), humidity), status_font)
+    flowers1 = Text(flowers1_string, butterfly_font)
+    flowers2 = Text(flowers2_string, flower_font)
+    text = Text(text_string, font)
+    mw = flowers1.w + text.w + flowers2.w #+ dw
 
     i = 0L
+    virtual = viewport(device, width=mw+dw*2, height=dh)
     while True:
-        degrees = sensor.read_temperature()
-        humidity = sensor.read_humidity()
-        with canvas(device) as draw:
-            #stat = Text('{0} {1:0.1f}ºF, {2:0.1f}%'.format(time.strftime('%b %d, %Y %H:%M:%S'), (degrees*9/5+32), humidity), draw, status_font)
-            stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format((degrees*9/5+32), humidity), draw, status_font)
-            flowers1 = Text(flowers1_string, draw, butterfly_font)
-            flowers2 = Text(flowers2_string, draw, flower_font)
-            text = Text(text_string, draw, font)
-
+        stat.text = '{0} {1:0.1f}ºF, {2:0.1f}%'.format(time.strftime('%H:%M:%S'), (degrees*9/5+32), humidity)
+        with canvas(virtual) as draw:
 
             if i % (dw + stat.w) == 0:
                 stat_left = 0 - stat.w
             else:
                 stat_left = 0 - stat.w + (i % (dw + stat.w))
                 #stat_left = dw - (i%(stat.w+dw))
+            stat_left=0
+            """
 
             if i % (dw + flowers1.w + flowers2.w + text.w) == 0:
                 msg_left = dw
             else:
                 msg_left = dw - (i % (dw + flowers1.w + flowers2.w + text.w))
+                """
+            msg_left=dw
 
-            stat.paint(stat_left, 0)
-            flowers1.paint(msg_left, dh - flowers1.h)
+            #draw.text((stat_left, 0), **stat.paint())
+            draw.text((msg_left, dh - flowers1.h), **flowers1.paint() )
+            draw.text((msg_left + flowers1.w, dh - text.h), **text.paint() )
 
-            #text.paint(msg_left + flowers1.w, dh - text.h)
-
+            """
             x = msg_left + flowers1.w
 	    for j, c in enumerate(text.text):
 		# Stop drawing if off the right side of screen.
@@ -99,8 +109,10 @@ def main(num_iterations=sys.maxsize):
 		# Increment x position based on chacacter width.
 		x += char_width
 
-            flowers2.paint(msg_left + flowers1.w + text.w, dh - text.h)
-            i += 2
+"""
+            draw.text((msg_left + flowers1.w + text.w, dh - text.h), **flowers2.paint())
+        virtual.set_position((i % (mw + dw), 0))
+        i += 2
 
 
 if __name__ == "__main__":
