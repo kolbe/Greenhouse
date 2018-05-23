@@ -13,7 +13,7 @@ import json
 import threading, signal
 import time, traceback
 
-from PIL import ImageFont
+from PIL import Image, ImageDraw, ImageFont
 
 from Adafruit_SHT31 import *
 from Adafruit_IO import *
@@ -22,13 +22,13 @@ from luma.core.render import canvas
 from luma.core.interface.serial import spi
 from luma.oled.device import ssd1306
 
-flowers1_string = "C"
-flowers2_string = "A"
-flowers2_string = "z"
-text_string = "I love you, mom!"
+default_cmd_json = '{"cmd":"message","value":[{"font":"butterfly_font", "msg":"A"},{"font":"font","msg":"I love you, mom!"},{"font":"flower_font","msg":"A"}]}'
 
-aio = Client('cd202c9bdc424c498eb586e81a2eeafb')
-client = MQTTClient('kmksea','cd202c9bdc424c498eb586e81a2eeafb')
+device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
+
+aio_key = 'cd202c9bdc424c498eb586e81a2eeafb'
+aio = Client(aio_key)
+client = MQTTClient('kmksea', aio_key)
 
 def connected(client):
     print('Connected to Adafruit IO!  Listening for Greenhouse Commands...')
@@ -38,10 +38,11 @@ def disconnected(client):
     print('Disconnected from Adafruit IO!')
     sys.exit(1)
 def message(client, feed_id, payload, retain):
-    global text_string
+    global message
     print('Feed {0} received new value: {1}'.format(feed_id, payload))
     if feed_id == 'GreenhouseCmds':
-        text_string=payload
+        execCmd(payload)
+
 
 class Every(threading.Thread):
     def __init__(self, delay, task):
@@ -54,11 +55,11 @@ class Every(threading.Thread):
     def run(self):
       next_time = time.time() + self.delay
       while not self.shutdown_flag.is_set():
-        time.sleep(max(0, next_time - time.time()))
         try:
           self.task()
         except Exception:
           traceback.print_exc()
+        time.sleep(max(0, next_time - time.time()))
         # skip tasks if we are behind schedule:
         next_time += (time.time() - next_time) // self.delay * self.delay + self.delay
 
@@ -91,25 +92,80 @@ def make_font(name, size):
     '/usr/local/share/fonts/', name))
     return ImageFont.truetype(font_path, size)
 
-flower_font = make_font(flower_font_file, 44)
-butterfly_font = make_font(butterfly_font_file, 44)
-status_font = make_font(status_font_file, 20)
-font = make_font(font_file, 44)
+class MessageChar():
+    def __init__(self, c, font, w, h):
+        self.c = c
+        self.font = font
+        self.w = w
+        self.h = h
+
+class MessageString():
+    def __init__(self, device):
+        self.strings = []
+        self.chars = []
+        self.device = device
+        self.dw = device.width
+        self.dh = device.height
+        self.width = 0
+
+    def append(self,msg):
+        draw = ImageDraw.Draw(Image.new(self.device.mode, self.device.size))
+        self.strings.append(msg)
+        for j, c in enumerate(msg.text):
+            char_width, char_height = draw.textsize(c, font=msg.font)
+            char = MessageChar(c, msg.font, char_width, char_height)
+            self.width += char.w
+
+    def paint(self, msg_left):
+        x = msg_left
+        for string in self.strings:
+            for j, c in enumerate(string.text):
+                # Stop drawing if off the right side of screen.
+                char_width, char_height = string.draw.textsize(c, font=string.font)
+                if x > self.dw - char_width :
+                    break
+                # Calculate width but skip drawing if off the left side of screen.
+                if x < char_width:
+                    x += char_width
+                    continue
+                # Calculate offset from sine wave.
+                # y = offset+math.floor(amplitude*math.sin(x/float(width)*2.0*math.pi))
+                # Draw text.
+                string.draw.text((x, self.dh - string.h), c, font=string.font, fill=100)
+                # Increment x position based on chacacter width.
+                x += char_width
+
+    def width(self):
+        w = 0
+        for string in self.strings:
+            w += string.w
+        return w
 
 class SHTresult:
     def __init__(self):
         self.degrees = 0.0
         self.humidity = 0.0
 
+def execCmd(cmd_json):
+    global message
+    cmd = json.loads(cmd_json)
+    if cmd["cmd"] == "message":
+        message = cmd["value"]
+
 
 def main(num_iterations=sys.maxsize):
-    global text_string
-    device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
+    global message
     dh = device.height
     dw = device.width
 
     sht = SHTresult()
     running = 1
+
+    fonts = {}
+    fonts["flower_font"] = make_font(flower_font_file, 44)
+    fonts["butterfly_font"] = make_font(butterfly_font_file, 44)
+    fonts["status_font"] = make_font(status_font_file, 20)
+    fonts["font"] = make_font(font_file, 44)
 
     def updateSHT31():
         sht.degrees = sensor.read_temperature() * 9/5 + 32
@@ -130,57 +186,40 @@ def main(num_iterations=sys.maxsize):
 	client.on_disconnect = disconnected
 	client.on_message    = message
         
-        text_string = str(aio.receive('GreenhouseCmds').value)
-        print "Read previous GreenhouseCmd of {}".format(text_string)
+        last_cmd = str(aio.receive('GreenhouseCmds').value)
+        if last_cmd:
+            print "Read previous GreenhouseCmd of {}".format(last_cmd)
+            execCmd(last_cmd)
+        else:
+            execCmd(default_json_cmd)
 
 	SHT31Thread.start()
 
 	i = 0L
 	while True:
 	    with canvas(device) as draw:
-		#stat = Text('{0} {1:0.1f}ºF, {2:0.1f}%'.format(time.strftime('%b %d, %Y %H:%M:%S'), (degrees*9/5+32), humidity), draw, status_font)
-		stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), draw, status_font)
-		flowers1 = Text(flowers1_string, draw, butterfly_font)
-		flowers2 = Text(flowers2_string, draw, flower_font)
-		text = Text(text_string, draw, font)
+		stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), draw, fonts["status_font"])
 
+                msg = MessageString(device)
+                for string in message:
+                    msg.append(Text(string["msg"], draw, fonts[string["font"]]))
 
 		if i % (dw + stat.w) == 0:
 		    stat_left = 0 - stat.w
 		else:
 		    stat_left = 0 - stat.w + (i % (dw + stat.w))
-		    #stat_left = dw - (i%(stat.w+dw))
 
-		if i % (dw + flowers1.w + flowers2.w + text.w) == 0:
+		if i % (dw + msg.width) == 0:
 		    msg_left = dw
 		else:
-		    msg_left = dw - (i % (dw + flowers1.w + flowers2.w + text.w))
+		    msg_left = dw - (i % (dw + msg.width))
 
 		stat.paint(stat_left, 0)
-		flowers1.paint(msg_left, dh - flowers1.h)
+                msg.paint(msg_left)
 
-		#text.paint(msg_left + flowers1.w, dh - text.h)
-
-		x = msg_left + flowers1.w
-		for j, c in enumerate(text.text):
-		    # Stop drawing if off the right side of screen.
-		    char_width, char_height = draw.textsize(c, font=text.font)
-		    if x > dw :
-			break
-		    # Calculate width but skip drawing if off the left side of screen.
-		    if x < -char_width:
-			x += char_width
-			continue
-		    # Calculate offset from sine wave.
-		    # y = offset+math.floor(amplitude*math.sin(x/float(width)*2.0*math.pi))
-		    # Draw text.
-		    draw.text((x, dh - text.h), c, font=font, fill=255)
-		    # Increment x position based on chacacter width.
-		    x += char_width
-
-		flowers2.paint(msg_left + flowers1.w + text.w, dh - text.h)
 		i += 2
-    except ServiceExit:
+    #except ServiceExit:
+    finally:
         SHT31Thread.shutdown_flag.set()
         SHT31Thread.join()
         client.disconnect()
