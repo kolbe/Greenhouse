@@ -25,6 +25,8 @@ from luma.oled.device import ssd1306
 default_cmd_json = '{"cmd":"message","value":[{"font":"butterfly_font", "msg":"A"},{"font":"font","msg":"I love you, mom!"},{"font":"flower_font","msg":"A"}]}'
 
 device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
+dw = device.width
+dh = device.height
 
 aio_key = 'cd202c9bdc424c498eb586e81a2eeafb'
 aio = Client(aio_key)
@@ -38,7 +40,7 @@ def disconnected(client):
     print('Disconnected from Adafruit IO!')
     sys.exit(1)
 def message(client, feed_id, payload, retain):
-    global message
+    global msg
     print('Feed {0} received new value: {1}'.format(feed_id, payload))
     if feed_id == 'GreenhouseCmds':
         execCmd(payload)
@@ -71,13 +73,12 @@ def service_shutdown(signum, frame):
     raise ServiceExit
 
 class Text:
-    def __init__(self, text, draw, font):
-        self.draw = draw
+    def __init__(self, text, font):
         self.text = text
         self.font = font
-        self.w, self.h = draw.textsize(text=text, font=font)
-    def paint(self, x, y):
-        self.draw.text((x,y), text=self.text, font=self.font, fill="white")
+#        self.w, self.h = draw.textsize(text=text, font=font)
+#    def paint(self, x, y):
+#        self.draw.text((x,y), text=self.text, font=self.font, fill="white")
 
 butterfly_font_file="ButterFly.ttf"
 flower_font_file="JandaFlowerDoodles.ttf"
@@ -92,6 +93,12 @@ def make_font(name, size):
     '/usr/local/share/fonts/', name))
     return ImageFont.truetype(font_path, size)
 
+fonts = {}
+fonts["flower_font"] = make_font(flower_font_file, 44)
+fonts["butterfly_font"] = make_font(butterfly_font_file, 44)
+fonts["status_font"] = make_font(status_font_file, 20)
+fonts["font"] = make_font(font_file, 44)
+
 class MessageChar():
     def __init__(self, c, font, w, h):
         self.c = c
@@ -104,9 +111,12 @@ class MessageString():
         self.strings = []
         self.chars = []
         self.device = device
-        self.dw = device.width
-        self.dh = device.height
-        self.width = 0
+        self.w = 0
+
+    def reset(self):
+        self.strings = []
+        self.chars = []
+        self.w = 0
 
     def append(self,msg):
         draw = ImageDraw.Draw(Image.new(self.device.mode, self.device.size))
@@ -114,65 +124,84 @@ class MessageString():
         for j, c in enumerate(msg.text):
             char_width, char_height = draw.textsize(c, font=msg.font)
             char = MessageChar(c, msg.font, char_width, char_height)
-            self.width += char.w
-
-    def paint(self, msg_left):
-        x = msg_left
-        for string in self.strings:
-            for j, c in enumerate(string.text):
-                # Stop drawing if off the right side of screen.
-                char_width, char_height = string.draw.textsize(c, font=string.font)
-                if x > self.dw - char_width :
-                    break
-                # Calculate width but skip drawing if off the left side of screen.
-                if x < char_width:
-                    x += char_width
-                    continue
-                # Calculate offset from sine wave.
-                # y = offset+math.floor(amplitude*math.sin(x/float(width)*2.0*math.pi))
-                # Draw text.
-                string.draw.text((x, self.dh - string.h), c, font=string.font, fill=100)
-                # Increment x position based on chacacter width.
-                x += char_width
-
-    def width(self):
-        w = 0
-        for string in self.strings:
-            w += string.w
-        return w
+            self.chars.append(char)
+            self.w += char.w
 
 class SHTresult:
     def __init__(self):
         self.degrees = 0.0
         self.humidity = 0.0
 
+class MainMessage(MessageString):
+    def paint (self, draw, i):
+        if i % (dw + self.w) == 0:
+            x = dw
+        else:
+            x = dw - (i % (dw + self.w))
+
+        for c in self.chars:
+            # Stop drawing if off the right side of screen.
+            if x > dw:
+                break
+            # Calculate width but skip drawing if off the left side of screen.
+            if x < -c.w:
+                x += c.w
+                continue
+            # Calculate offset from sine wave.
+            # y = offset+math.floor(amplitude*math.sin(x/float(width)*2.0*math.pi))
+            # Draw text.
+            draw.text((x, dh - c.h), c.c, font=c.font, fill=255)
+            # Increment x position based on chacacter width.
+            x += c.w
+
+class StatusMessage(MessageString):
+    def paint (self, draw, i):
+        if i % (dw + self.w) == 0:
+            x = 0 
+        else:
+            x = i % (dw + self.w)
+
+        for c in reversed(self.chars):
+            # Stop drawing if off the left side of the screen
+            if x < -c.w:
+                break
+                #continue
+            # Calculate width but skip drawing if off the right side of the screen
+            if x > dw:
+                x -= c.w
+                continue
+            draw.text((x, 0), c.c, font=c.font, fill=255)
+            x -= c.w
+
+
 def execCmd(cmd_json):
-    global message
+    global msg
     cmd = json.loads(cmd_json)
     if cmd["cmd"] == "message":
-        message = cmd["value"]
+        msg = MainMessage(device)
+        msg_parts = cmd["value"]
+        for string in msg_parts:
+            msg.append(Text(string["msg"], fonts[string["font"]]))
 
 
 def main(num_iterations=sys.maxsize):
-    global message
-    dh = device.height
-    dw = device.width
+    global msg
 
     sht = SHTresult()
     running = 1
 
-    fonts = {}
-    fonts["flower_font"] = make_font(flower_font_file, 44)
-    fonts["butterfly_font"] = make_font(butterfly_font_file, 44)
-    fonts["status_font"] = make_font(status_font_file, 20)
-    fonts["font"] = make_font(font_file, 44)
+    stat = StatusMessage(device)
 
     def updateSHT31():
+
         sht.degrees = sensor.read_temperature() * 9/5 + 32
         sht.humidity = sensor.read_humidity()
         client.publish('GreenhouseTemp', sht.degrees)
         client.publish('GreenhouseHumidity', sht.humidity)
         print "Read temp of {} and humidity of {}".format(sht.degrees,sht.humidity)
+        stat.reset()
+        stat.append(Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), fonts["status_font"]))
+        print "Status text should be {}".format(stat.strings[0].text)
 
     signal.signal(signal.SIGTERM, service_shutdown)
     signal.signal(signal.SIGINT, service_shutdown)
@@ -186,6 +215,8 @@ def main(num_iterations=sys.maxsize):
 	client.on_disconnect = disconnected
 	client.on_message    = message
         
+	SHT31Thread.start()
+
         last_cmd = str(aio.receive('GreenhouseCmds').value)
         if last_cmd:
             print "Read previous GreenhouseCmd of {}".format(last_cmd)
@@ -193,29 +224,13 @@ def main(num_iterations=sys.maxsize):
         else:
             execCmd(default_json_cmd)
 
-	SHT31Thread.start()
-
 	i = 0L
 	while True:
 	    with canvas(device) as draw:
-		stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), draw, fonts["status_font"])
 
-                msg = MessageString(device)
-                for string in message:
-                    msg.append(Text(string["msg"], draw, fonts[string["font"]]))
 
-		if i % (dw + stat.w) == 0:
-		    stat_left = 0 - stat.w
-		else:
-		    stat_left = 0 - stat.w + (i % (dw + stat.w))
-
-		if i % (dw + msg.width) == 0:
-		    msg_left = dw
-		else:
-		    msg_left = dw - (i % (dw + msg.width))
-
-		stat.paint(stat_left, 0)
-                msg.paint(msg_left)
+		stat.paint(draw, i)
+                msg.paint(draw, i)
 
 		i += 2
     #except ServiceExit:
