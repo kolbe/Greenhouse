@@ -9,6 +9,7 @@ from __future__ import unicode_literals
 import os
 import sys
 import random
+import json
 import threading, signal
 import time, traceback
 
@@ -26,6 +27,7 @@ flowers2_string = "A"
 flowers2_string = "z"
 text_string = "I love you, mom!"
 
+aio = Client('cd202c9bdc424c498eb586e81a2eeafb')
 client = MQTTClient('kmksea','cd202c9bdc424c498eb586e81a2eeafb')
 
 def connected(client):
@@ -94,35 +96,42 @@ butterfly_font = make_font(butterfly_font_file, 44)
 status_font = make_font(status_font_file, 20)
 font = make_font(font_file, 44)
 
+class SHTresult:
+    def __init__(self):
+        self.degrees = 0.0
+        self.humidity = 0.0
 
 
 def main(num_iterations=sys.maxsize):
+    global text_string
     device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
     dh = device.height
     dw = device.width
 
-    degrees = 0.0
-    humidity = 0.0
+    sht = SHTresult()
     running = 1
 
     def updateSHT31():
-        degrees = sensor.read_temperature() * 9/5 + 32
-        humidity = sensor.read_humidity()
-        client.publish('GreenhouseTemp', degrees)
-        client.publish('GreenhouseHumidity', humidity)
-        print "Read temp of {} and humidity of {}".format(degrees,humidity)
+        sht.degrees = sensor.read_temperature() * 9/5 + 32
+        sht.humidity = sensor.read_humidity()
+        client.publish('GreenhouseTemp', sht.degrees)
+        client.publish('GreenhouseHumidity', sht.humidity)
+        print "Read temp of {} and humidity of {}".format(sht.degrees,sht.humidity)
 
     signal.signal(signal.SIGTERM, service_shutdown)
     signal.signal(signal.SIGINT, service_shutdown)
 
     try:
-	SHT31Thread = Every(1, updateSHT31)
+	SHT31Thread = Every(5, updateSHT31)
 
 	client.connect()
 	client.loop_background()
 	client.on_connect    = connected
 	client.on_disconnect = disconnected
 	client.on_message    = message
+        
+        text_string = str(aio.receive('GreenhouseCmds').value)
+        print "Read previous GreenhouseCmd of {}".format(text_string)
 
 	SHT31Thread.start()
 
@@ -130,7 +139,7 @@ def main(num_iterations=sys.maxsize):
 	while True:
 	    with canvas(device) as draw:
 		#stat = Text('{0} {1:0.1f}ºF, {2:0.1f}%'.format(time.strftime('%b %d, %Y %H:%M:%S'), (degrees*9/5+32), humidity), draw, status_font)
-		stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format(degrees, humidity), draw, status_font)
+		stat = Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), draw, status_font)
 		flowers1 = Text(flowers1_string, draw, butterfly_font)
 		flowers2 = Text(flowers2_string, draw, flower_font)
 		text = Text(text_string, draw, font)
@@ -175,7 +184,6 @@ def main(num_iterations=sys.maxsize):
         SHT31Thread.shutdown_flag.set()
         SHT31Thread.join()
         client.disconnect()
-
 
 
 if __name__ == "__main__":
