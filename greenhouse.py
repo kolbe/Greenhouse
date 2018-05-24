@@ -22,7 +22,7 @@ from luma.core.render import canvas
 from luma.core.interface.serial import spi
 from luma.oled.device import ssd1306
 
-default_cmd_json = '{"cmd":"message","value":[{"font":"butterfly_font", "msg":"A"},{"font":"font","msg":"I love you, mom!"},{"font":"flower_font","msg":"A"}]}'
+default_cmd_json = '{"cmd":"message","value":[{"font":"butterfly.ttf", "msg":"A"},{"font":"arista_light.ttf","msg":"I love you, mom!"},{"font":"jandaflowerdoodles.ttf","msg":"A"}]}'
 
 device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
 dw = device.width
@@ -80,10 +80,8 @@ class Text:
 #    def paint(self, x, y):
 #        self.draw.text((x,y), text=self.text, font=self.font, fill="white")
 
-butterfly_font_file="ButterFly.ttf"
-flower_font_file="JandaFlowerDoodles.ttf"
-status_font_file="LiberationMono-Bold.ttf"
-font_file="Something Looks Natural Regular.otf"
+status_font_file="cqmono.otf"
+font_file="somethinglooksnatural.otf"
 
 sensor = SHT31(address = 0x44)
 
@@ -94,9 +92,7 @@ def make_font(name, size):
     return ImageFont.truetype(font_path, size)
 
 fonts = {}
-fonts["flower_font"] = make_font(flower_font_file, 44)
-fonts["butterfly_font"] = make_font(butterfly_font_file, 44)
-fonts["status_font"] = make_font(status_font_file, 20)
+fonts["status"] = make_font(status_font_file, 20)
 fonts["font"] = make_font(font_file, 44)
 
 class MessageChar():
@@ -178,14 +174,23 @@ def execCmd(cmd_json):
     global msg
     cmd = json.loads(cmd_json)
     if cmd["cmd"] == "message":
-        msg = MainMessage(device)
+        msg.reset()
         msg_parts = cmd["value"]
         for string in msg_parts:
-            msg.append(Text(string["msg"], fonts[string["font"]]))
+            if string["font"] in fonts:
+                f = fonts[string["font"]]
+            else:
+                try: 
+                    f = make_font(string["font"], 44)
+                except:
+                    print "Could not load font {}".format(string["font"])
+                    f = fonts["font"]
+            msg.append(Text(string["msg"], f))
 
 
 def main(num_iterations=sys.maxsize):
     global msg
+    msg = MainMessage(device)
 
     sht = SHTresult()
     running = 1
@@ -198,10 +203,9 @@ def main(num_iterations=sys.maxsize):
         sht.humidity = sensor.read_humidity()
         client.publish('GreenhouseTemp', sht.degrees)
         client.publish('GreenhouseHumidity', sht.humidity)
-        print "Read temp of {} and humidity of {}".format(sht.degrees,sht.humidity)
+        #print "Read temp of {} and humidity of {}".format(sht.degrees,sht.humidity)
         stat.reset()
-        stat.append(Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), fonts["status_font"]))
-        print "Status text should be {}".format(stat.strings[0].text)
+        stat.append(Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), fonts["status"]))
 
     signal.signal(signal.SIGTERM, service_shutdown)
     signal.signal(signal.SIGINT, service_shutdown)
@@ -227,11 +231,8 @@ def main(num_iterations=sys.maxsize):
 	i = 0L
 	while True:
 	    with canvas(device) as draw:
-
-
 		stat.paint(draw, i)
                 msg.paint(draw, i)
-
 		i += 2
     #except ServiceExit:
     finally:
