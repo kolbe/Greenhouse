@@ -17,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from Adafruit_SHT31 import *
 from Adafruit_IO import *
+from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient
 
 from luma.core.render import canvas
 from luma.core.interface.serial import spi
@@ -28,9 +29,19 @@ device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
 dw = device.width
 dh = device.height
 
-aio_key = 'cd202c9bdc424c498eb586e81a2eeafb'
-aio = Client(aio_key)
-client = MQTTClient('kmksea', aio_key)
+aio_key = os.environ['AIO_KEY']
+aiorest = Client(aio_key)
+aiomqtt = MQTTClient(os.environ['AIO_USER'], aio_key)
+
+awsiot = AWSIoTMQTTClient("BaskGreenhouse", useWebsocket=True)
+awsiot.configureEndpoint(os.environ['AWSIOT_ENDPOINT'], 443)
+awsiot.configureCredentials("/usr/local/share/ca-certificates/awsiot.pem")
+
+awsiot.configureOfflinePublishQueueing(-1)  # Infinite offline Publish queueing
+awsiot.configureDrainingFrequency(2)  # Draining: 2 Hz
+awsiot.configureConnectDisconnectTimeout(10)  # 10 sec
+awsiot.configureMQTTOperationTimeout(5)  # 5 sec
+
 
 def connected(client):
     print('Connected to Adafruit IO!  Listening for Greenhouse Commands...')
@@ -40,10 +51,14 @@ def disconnected(client):
     print('Disconnected from Adafruit IO!')
     sys.exit(1)
 def message(client, feed_id, payload, retain):
-    global msg
-    print('Feed {0} received new value: {1}'.format(feed_id, payload))
+    print('Adafruit IO Feed {0} received new value: {1}'.format(feed_id, payload))
     if feed_id == 'GreenhouseCmds':
         execCmd(payload)
+
+def awsiotmessage(client, userdata, message):
+    print('AWS IoT Feed {0} received new value: {1}'.format(message.topic, message.payload))
+    if message.topic == 'Greenhouse/Cmds':
+        execCmd(message.payload)
 
 
 class Every(threading.Thread):
@@ -156,6 +171,7 @@ class StatusMessage(MessageString):
             x = 0 
         else:
             x = i % (dw + self.w)
+        #print "i: {}, x: {}".format(i,x) 
 
         for c in reversed(self.chars):
             # Stop drawing if off the left side of the screen
@@ -172,7 +188,12 @@ class StatusMessage(MessageString):
 
 def execCmd(cmd_json):
     global msg
-    cmd = json.loads(cmd_json)
+    try:
+        cmd = json.loads(cmd_json)
+    except ValueError as err:
+        sys.stderr.write('Could not parse JSON: {}'.format(err)) 
+        return
+        
     if cmd["cmd"] == "message":
         msg.reset()
         msg_parts = cmd["value"]
@@ -201,9 +222,10 @@ def main(num_iterations=sys.maxsize):
 
         sht.degrees = sensor.read_temperature() * 9/5 + 32
         sht.humidity = sensor.read_humidity()
-        client.publish('GreenhouseTemp', sht.degrees)
-        client.publish('GreenhouseHumidity', sht.humidity)
-        #print "Read temp of {} and humidity of {}".format(sht.degrees,sht.humidity)
+        aiomqtt.publish('GreenhouseTemp', sht.degrees)
+        aiomqtt.publish('GreenhouseHumidity', sht.humidity)
+        awsiot.publish('Greenhouse/Stats', json.dumps({"temperature":sht.degrees,"humidity":sht.humidity},separators=(',',':')),0)
+        print "Read temp of {} and humidity of {}".format(sht.degrees,sht.humidity)
         stat.reset()
         stat.append(Text('{0:0.1f}ºF, {1:0.1f}%'.format(sht.degrees, sht.humidity), fonts["status"]))
 
@@ -213,15 +235,18 @@ def main(num_iterations=sys.maxsize):
     try:
 	SHT31Thread = Every(5, updateSHT31)
 
-	client.connect()
-	client.loop_background()
-	client.on_connect    = connected
-	client.on_disconnect = disconnected
-	client.on_message    = message
+	aiomqtt.connect()
+	aiomqtt.loop_background()
+	aiomqtt.on_connect    = connected
+	aiomqtt.on_disconnect = disconnected
+	aiomqtt.on_message    = message
+
+        awsiot.connect()
+        awsiot.subscribe(str("Greenhouse/Cmds"), 1, awsiotmessage)
         
 	SHT31Thread.start()
 
-        last_cmd = str(aio.receive('GreenhouseCmds').value)
+        last_cmd = str(aiorest.receive('GreenhouseCmds').value)
         if last_cmd:
             print "Read previous GreenhouseCmd of {}".format(last_cmd)
             execCmd(last_cmd)
@@ -233,12 +258,17 @@ def main(num_iterations=sys.maxsize):
 	    with canvas(device) as draw:
 		stat.paint(draw, i)
                 msg.paint(draw, i)
-		i += 2
-    #except ServiceExit:
+		i += 1
+    #except ServiceExit: pass
+    except: 
+        #sys.stderr.write('ERROR: %sn' % str(err))
+        raise
+
     finally:
         SHT31Thread.shutdown_flag.set()
-        SHT31Thread.join()
-        client.disconnect()
+        if SHT31Thread.isAlive(): SHT31Thread.join() 
+        aiomqtt.disconnect()
+        awsiot.disconnect()
 
 
 if __name__ == "__main__":
