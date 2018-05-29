@@ -16,6 +16,7 @@ import time, traceback
 from PIL import Image, ImageDraw, ImageFont
 
 from Adafruit_SHT31 import *
+import Adafruit_DHT
 from Adafruit_IO import *
 from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient
 
@@ -98,7 +99,11 @@ class Text:
 status_font_file="cqmono.otf"
 font_file="somethinglooksnatural.otf"
 
-sensor = SHT31(address = 0x44)
+sensorSHT = SHT31(address = 0x44)
+sensorDHT = Adafruit_DHT.AM2302
+sensorDHTpin = 27
+
+
 
 def make_font(name, size):
     font_path = os.path.abspath(os.path.join(
@@ -138,7 +143,7 @@ class MessageString():
             self.chars.append(char)
             self.w += char.w
 
-class SHTresult:
+class sensorResult:
     def __init__(self):
         self.degrees = 0.0
         self.humidity = 0.0
@@ -213,15 +218,25 @@ def main(num_iterations=sys.maxsize):
     global msg
     msg = MainMessage(device)
 
-    sht = SHTresult()
+    sht = sensorResult()
     running = 1
 
     stat = StatusMessage(device)
 
-    def updateSHT31():
+    def pollSensor():
 
-        sht.degrees = sensor.read_temperature() * 9/5 + 32
-        sht.humidity = sensor.read_humidity()
+        def readDHT():
+            humidity, temperature = Adafruit_DHT.read_retry(sensorDHT, sensorDHTpin, delay_seconds=0.2, retries=5)
+            if humidity is not None and temperature is not None:
+                return temperature * 9/5 + 32, humidity
+            else:
+                sys.stderr.write("Could not read temperature and humidity from DHT sensor!\n")
+
+        def readSHT():
+            sht.degrees = sensorSHT.read_temperature() * 9/5 + 32
+            sht.humidity = sensorSHT.read_humidity()
+
+        sht.degrees, sht.humidity = readDHT()
         aiomqtt.publish('GreenhouseTemp', sht.degrees)
         aiomqtt.publish('GreenhouseHumidity', sht.humidity)
         awsiot.publish('Greenhouse/Stats', json.dumps({"temperature":sht.degrees,"humidity":sht.humidity},separators=(',',':')),0)
@@ -233,7 +248,7 @@ def main(num_iterations=sys.maxsize):
     signal.signal(signal.SIGINT, service_shutdown)
 
     try:
-	SHT31Thread = Every(5, updateSHT31)
+	sensorThread = Every(5, pollSensor)
 
 	aiomqtt.connect()
 	aiomqtt.loop_background()
@@ -244,7 +259,7 @@ def main(num_iterations=sys.maxsize):
         awsiot.connect()
         awsiot.subscribe(str("Greenhouse/Cmds"), 1, awsiotmessage)
         
-	SHT31Thread.start()
+	sensorThread.start()
 
         last_cmd = str(aiorest.receive('GreenhouseCmds').value)
         if last_cmd:
@@ -265,8 +280,8 @@ def main(num_iterations=sys.maxsize):
         raise
 
     finally:
-        SHT31Thread.shutdown_flag.set()
-        if SHT31Thread.isAlive(): SHT31Thread.join() 
+        sensorThread.shutdown_flag.set()
+        if sensorThread.isAlive(): sensorThread.join() 
         aiomqtt.disconnect()
         awsiot.disconnect()
 
