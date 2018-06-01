@@ -6,6 +6,7 @@
 
 from __future__ import unicode_literals
 
+from decimal import *
 import os
 import sys
 import json
@@ -26,6 +27,9 @@ from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient
 from luma.core.render import canvas
 from luma.core.interface.serial import spi
 from luma.oled.device import ssd1306
+
+tempAlarmMin = Decimal('40.0')
+tempAlarmMax = Decimal('100.0')
 
 device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
 dw = device.width
@@ -220,7 +224,7 @@ def pollSensor(result):
             humidity, temperature = Adafruit_DHT.read_retry(sensorDHT, sensorDHTpin, delay_seconds=0.2, retries=5)
             if humidity is not None and temperature is not None:
                 temperature = temperature * 9/5 + 32
-                print "Got new stats! Temp {} and humidity {}".format(temperature, humidity)
+                #print "Got new stats! Temp {} and humidity {}".format(temperature, humidity)
                 return temperature, humidity
             else:
                 sys.stderr.write("Could not read temperature and humidity from DHT sensor!\n")
@@ -262,17 +266,32 @@ def main():
 
     tempAlarm = Alarm()
 
+    class SensorReading(object):
+        getcontext().prec = 5
+        quant = Decimal('.01')
+        def __init__(self, degrees='0.00', humidity='0.00'):
+            self.d = Decimal(degrees)
+            self.h = Decimal(humidity)
+            self.ds = ''
+            self.hs = ''
+        def update(self, degrees, humidity):
+            self.d = Decimal(degrees).quantize(self.quant)
+            self.h = Decimal(humidity).quantize(self.quant)
+            self.ds = str(self.d)
+            self.hs = str(self.h)
+
+    sen = SensorReading()
+
     def readSensor():
-        degrees = envResult[0]
-        humidity = envResult[1]
-        if degrees < 40.0 and not tempAlarm.thread.is_alive():
+        sen.update(*envResult)
+        if ( sen.d < tempAlarmMin or sen.d > tempAlarmMax ) and not tempAlarm.thread.is_alive():
             tempAlarm.thread.start()
-        aiomqtt.publish('GreenhouseTemp', degrees)
-        aiomqtt.publish('GreenhouseHumidity', humidity)
-        awsiot.publish('Greenhouse/Stats', json.dumps({"temperature":degrees, "humidity":humidity}, separators=(',', ':')), 0)
-        print "Read temp of {} and humidity of {}".format(degrees, humidity)
+        aiomqtt.publish('GreenhouseTemp', sen.ds)
+        aiomqtt.publish('GreenhouseHumidity', sen.hs)
+        awsiot.publish('Greenhouse/Stats', json.dumps({"ts":time.time(), "d":sen.ds, "h":sen.hs}, separators=(',', ':')), 0)
+        print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
         stat.reset()
-        stat.append(Text('{0:0.1f}ºF, {1:0.1f}%'.format(degrees, humidity), fonts["status"]))
+        stat.append(Text('{}ºF, {}%'.format(sen.ds, sen.hs), fonts["status"]))
 
     signal.signal(signal.SIGTERM, service_shutdown)
     signal.signal(signal.SIGINT, service_shutdown)
