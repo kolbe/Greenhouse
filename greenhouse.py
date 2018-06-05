@@ -22,7 +22,7 @@ import RPi.GPIO as GPIO
 from Adafruit_SHT31 import *
 import Adafruit_DHT
 from Adafruit_IO import *
-from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient
+from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient, AWSIoTMQTTShadowClient
 
 from luma.core.render import canvas
 from luma.core.interface.serial import spi
@@ -31,7 +31,7 @@ from luma.oled.device import ssd1306
 tempAlarmMin = Decimal('40.0')
 tempAlarmMax = Decimal('100.0')
 
-device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24))
+device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24), rotate=2)
 dw = device.width
 dh = device.height
 
@@ -86,9 +86,15 @@ class Alarm(object):
     def __init__(self, duration=5):
         GPIO.setup(self.alarmPin, GPIO.OUT)
         self.duration = duration
+        self.active = False
+
+    def alarm(self):
+        self.active = True
         self.thread = threading.Thread(target=self.run, args=())
         self.thread.daemon = True
         self.alarmPwm = GPIO.PWM(self.alarmPin, 4000)
+        self.thread.start()
+        del self.thread
 
     def run(self):
         self.alarmPwm.start(50)
@@ -98,6 +104,7 @@ class Alarm(object):
                 self.alarmPwm.ChangeFrequency(dc)
                 time.sleep(0.5)
         self.alarmPwm.stop()
+        self.active = False
 
 
 class ServiceExit(Exception): pass
@@ -196,6 +203,18 @@ class StatusMessage(MessageString):
             draw.text((x, 0), c.c, font=c.font, fill=255)
             x -= c.w
 
+def updateMsg(msg_parts):
+    msg.reset()
+    for string in msg_parts:
+        if string["font"] in fonts:
+            f = fonts[string["font"]]
+        else:
+            try:
+                f = make_font(string["font"], 44)
+            except:
+                print "Could not load font {}".format(string["font"])
+                f = fonts["font"]
+        msg.append(Text(string["msg"], f))
 
 def execCmd(cmd_json):
     global msg
@@ -205,18 +224,33 @@ def execCmd(cmd_json):
         sys.stderr.write('Could not parse JSON: {}'.format(err))
         return
     if cmd["cmd"] == "message":
-        msg.reset()
-        msg_parts = cmd["value"]
-        for string in msg_parts:
-            if string["font"] in fonts:
-                f = fonts[string["font"]]
-            else:
-                try:
-                    f = make_font(string["font"], 44)
-                except:
-                    print "Could not load font {}".format(string["font"])
-                    f = fonts["font"]
-            msg.append(Text(string["msg"], f))
+        updateMsg(cmd["value"])
+
+def shadowUpdate(payload, responseStatus, token):
+    if responseStatus == 'timeout':
+        pass
+    if responseStatus == 'accepted':
+        data = json.loads(payload)
+    if responseStatus == 'rejected':
+        pass
+
+def handleShadow(state):
+    print "handling shadow state message: {}".format(state)
+    if "message" in state:
+        print "new message: {}".format(state["message"])
+        updateMsg(state["message"])
+
+def shadowGet(payload, responseStatus, token):
+    print "shadowDeltaGet responseStatus: {}".format(responseStatus)
+    j = json.loads(payload)
+    print "Shadow State (version {}): {}".format(j["version"], j["state"])
+    handleShadow(j["state"]["desired"])
+
+def shadowDelta(payload, responseStatus, token):
+    print "shadowDelta responseStatus: {}".format(responseStatus)
+    j = json.loads(payload)
+    print "Shadow Delta (version {}): {}".format(j["version"], j["state"])
+    handleShadow(j["state"])
 
 def pollSensor(result):
     while True:
@@ -249,14 +283,25 @@ def main():
     aiorest = Client(aio_key)
     aiomqtt = MQTTClient(aio_user, aio_key)
 
-    awsiot = AWSIoTMQTTClient("BaskGreenhouse", useWebsocket=True)
+    awsClientId = "BaskGreenhouseDevice"
+    awsThingId = "BaskGreenhouse"
+    awsiotRootCAPath = "/usr/local/share/ca-certificates/awsiot.pem"
+    awsiot = AWSIoTMQTTClient(awsClientId, useWebsocket=True)
     awsiot.configureEndpoint(os.environ['AWSIOT_ENDPOINT'], 443)
-    awsiot.configureCredentials("/usr/local/share/ca-certificates/awsiot.pem")
+    awsiot.configureCredentials(awsiotRootCAPath )
 
     awsiot.configureOfflinePublishQueueing(-1)  # Infinite offline Publish queueing
     awsiot.configureDrainingFrequency(2)  # Draining: 2 Hz
     awsiot.configureConnectDisconnectTimeout(10)  # 10 sec
     awsiot.configureMQTTOperationTimeout(5)  # 5 sec
+
+    awsiotShadow = AWSIoTMQTTShadowClient(awsClientId+"Shadow", useWebsocket=True)
+    awsiotShadow.configureEndpoint(os.environ['AWSIOT_ENDPOINT'], 443)
+    awsiotShadow.configureCredentials(awsiotRootCAPath)
+
+    awsiotShadow.configureAutoReconnectBackoffTime(1, 32, 20)
+    awsiotShadow.configureConnectDisconnectTimeout(10)  # 10 sec
+    awsiotShadow.configureMQTTOperationTimeout(5)  # 5 sec
 
     stat = StatusMessage(device)
 
@@ -284,12 +329,13 @@ def main():
 
     def readSensor():
         sen.update(*envResult)
-        if ( sen.d < tempAlarmMin or sen.d > tempAlarmMax ) and not tempAlarm.thread.is_alive():
-            tempAlarm.thread.start()
+        if ( sen.d < tempAlarmMin or sen.d > tempAlarmMax ) and not tempAlarm.active:
+            print "Alarming! {} between {} and {}".format(sen.d, tempAlarmMin, tempAlarmMax)
+            tempAlarm.alarm()
         aiomqtt.publish('GreenhouseTemp', sen.ds)
         aiomqtt.publish('GreenhouseHumidity', sen.hs)
         awsiot.publish('Greenhouse/Stats', json.dumps({"ts":time.time(), "d":sen.ds, "h":sen.hs}, separators=(',', ':')), 0)
-        print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
+        # print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
         stat.reset()
         stat.append(Text('{}ºF, {}%'.format(sen.ds, sen.hs), fonts["status"]))
 
@@ -297,6 +343,7 @@ def main():
     signal.signal(signal.SIGINT, service_shutdown)
 
     try:
+        updateMsg([{"font":"font","msg":"x y z"}])
         sensorThread = Every(5, readSensor)
 
         aiomqtt.connect()
@@ -308,14 +355,21 @@ def main():
         awsiot.connect()
         awsiot.subscribe(str("Greenhouse/Cmds"), 1, awsiotmessage)
 
+        awsiotShadow.connect()
+        deviceShadowHandler = awsiotShadow.createShadowHandlerWithName(awsThingId, True)
+        deviceShadowHandler.shadowGet(shadowGet, 5)
+        deviceShadowHandler.shadowRegisterDeltaCallback(shadowDelta)
+
         sensorThread.start()
 
+        '''
         last_cmd = str(aiorest.receive('GreenhouseCmds').value)
         if last_cmd:
             print "Read previous GreenhouseCmd of {}".format(last_cmd)
             execCmd(last_cmd)
         else:
             execCmd(default_cmd_json)
+        '''
 
         i = 0L
         while True:
