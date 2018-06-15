@@ -21,12 +21,15 @@ from PIL import Image, ImageDraw, ImageFont
 import RPi.GPIO as GPIO
 from Adafruit_SHT31 import *
 import Adafruit_DHT
-from Adafruit_IO import *
+#from Adafruit_IO import *
 from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient, AWSIoTMQTTShadowClient
 
 from luma.core.render import canvas
 from luma.core.interface.serial import spi
 from luma.oled.device import ssd1306
+
+unbuffered = os.fdopen(sys.stdout.fileno(), 'w', 0)
+sys.stdout = unbuffered
 
 tempAlarmMin = Decimal('40.0')
 tempAlarmMax = Decimal('100.0')
@@ -39,19 +42,23 @@ sensorSHT = SHT31(address=0x44)
 sensorDHT = Adafruit_DHT.AM2302
 sensorDHTpin = 27
 
+green_pin = 17
+black_pin = 18
+
 aio_key = os.environ['AIO_KEY']
 aio_user = os.environ['AIO_USER']
 
 default_cmd_json = '{"cmd":"message","value":[{"font":"butterfly.ttf", "msg":"A"},{"font":"arista_light.ttf","msg":"I love you, mom!"},{"font":"jandaflowerdoodles.ttf","msg":"A"}]}'
 
-def connected(client):
+
+def aio_connected(client):
     print 'Connected to Adafruit IO!  Listening for Greenhouse Commands...'
     client.subscribe('GreenhouseCmds')
-def disconnected(client):
+def aio_disconnected(client):
     # Disconnected function will be called when the client disconnects.
     print 'Disconnected from Adafruit IO!'
     sys.exit(1)
-def message(client, feed_id, payload, retain):
+def aio_message(client, feed_id, payload, retain):
     print 'Adafruit IO Feed {0} received new value: {1}'.format(feed_id, payload)
     if feed_id == 'GreenhouseCmds':
         execCmd(payload)
@@ -138,7 +145,8 @@ class MessageChar(object):
         self.c = c
         self.font = font
         self.w = w
-        self.h = h
+        ascent, descent = font.getmetrics()
+        self.h = ascent + descent
 
 class MessageString(object):
     def __init__(self, device):
@@ -269,26 +277,46 @@ def pollSensor(result):
             humidity = sensorSHT.read_humidity()
             return temperature, humidity
 
-        degrees, humidity = readDHT()
+        try:
+            degrees, humidity = readDHT()
+            # print "Read {} and {} from DHT".format(degrees, humidity)
+        except:
+            sys.stderr.write("Could not read from DHT sensor.")
+            degrees = None
+            humidity = None
+
         if degrees != None and humidity != None:
             result[0] = degrees
             result[1] = humidity
-        time.sleep(5)
+
+        #try:
+        #    degrees, humidity = readSHT()
+        #    print "Read {} and {} from SHT".format(degrees, humidity)
+        #except:
+        #    sys.stderr.write("Could not read from DHT sensor.")
+
+        time.sleep(10)
+
+def black_button_press(channel):
+    print "Black button pressed"
+
+def green_button_press(channel):
+    print "Green button pressed"
 
 
 def main():
     global msg
     msg = MainMessage(device)
 
-    aiorest = Client(aio_key)
-    aiomqtt = MQTTClient(aio_user, aio_key)
+    #aiorest = Client(aio_key)
+    #aiomqtt = MQTTClient(aio_user, aio_key)
 
     awsClientId = "BaskGreenhouseDevice"
     awsThingId = "BaskGreenhouse"
     awsiotRootCAPath = "/usr/local/share/ca-certificates/awsiot.pem"
     awsiot = AWSIoTMQTTClient(awsClientId, useWebsocket=True)
     awsiot.configureEndpoint(os.environ['AWSIOT_ENDPOINT'], 443)
-    awsiot.configureCredentials(awsiotRootCAPath )
+    awsiot.configureCredentials(awsiotRootCAPath)
 
     awsiot.configureOfflinePublishQueueing(-1)  # Infinite offline Publish queueing
     awsiot.configureDrainingFrequency(2)  # Draining: 2 Hz
@@ -302,6 +330,12 @@ def main():
     awsiotShadow.configureAutoReconnectBackoffTime(1, 32, 20)
     awsiotShadow.configureConnectDisconnectTimeout(10)  # 10 sec
     awsiotShadow.configureMQTTOperationTimeout(5)  # 5 sec
+
+    GPIO.setup(green_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+    GPIO.setup(black_pin, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+    GPIO.add_event_detect(green_pin, GPIO.RISING, callback=green_button_press, bouncetime=300)
+    GPIO.add_event_detect(black_pin, GPIO.RISING, callback=black_button_press, bouncetime=300)
 
     stat = StatusMessage(device)
 
@@ -329,13 +363,13 @@ def main():
 
     def readSensor():
         sen.update(*envResult)
-        if ( sen.d < tempAlarmMin or sen.d > tempAlarmMax ) and not tempAlarm.active:
+        if (sen.d < tempAlarmMin or sen.d > tempAlarmMax) and not tempAlarm.active:
             print "Alarming! {} between {} and {}".format(sen.d, tempAlarmMin, tempAlarmMax)
-            tempAlarm.alarm()
-        aiomqtt.publish('GreenhouseTemp', sen.ds)
-        aiomqtt.publish('GreenhouseHumidity', sen.hs)
+            #tempAlarm.alarm()
+        #aiomqtt.publish('GreenhouseTemp', sen.ds)
+        #aiomqtt.publish('GreenhouseHumidity', sen.hs)
         awsiot.publish('Greenhouse/Stats', json.dumps({"ts":time.time(), "d":sen.ds, "h":sen.hs}, separators=(',', ':')), 0)
-        # print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
+        #print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
         stat.reset()
         stat.append(Text('{}ºF, {}%'.format(sen.ds, sen.hs), fonts["status"]))
 
@@ -343,14 +377,14 @@ def main():
     signal.signal(signal.SIGINT, service_shutdown)
 
     try:
-        updateMsg([{"font":"font","msg":"x y z"}])
+        updateMsg([{"font":"font", "msg":"x y z"}])
         sensorThread = Every(5, readSensor)
 
-        aiomqtt.connect()
-        aiomqtt.loop_background()
-        aiomqtt.on_connect = connected
-        aiomqtt.on_disconnect = disconnected
-        aiomqtt.on_message = message
+        #aiomqtt.connect()
+        #aiomqtt.loop_background()
+        #aiomqtt.on_connect = connected
+        #aiomqtt.on_disconnect = disconnected
+        #aiomqtt.on_message = message
 
         awsiot.connect()
         awsiot.subscribe(str("Greenhouse/Cmds"), 1, awsiotmessage)
@@ -377,7 +411,7 @@ def main():
                 stat.paint(draw, i)
                 msg.paint(draw, i)
                 i += 1
-    #except ServiceExit: pass
+    except ServiceExit: return
     except:
         #sys.stderr.write('ERROR: %sn' % str(err))
         raise
@@ -385,7 +419,7 @@ def main():
     finally:
         sensorThread.shutdown_flag.set()
         if sensorThread.isAlive(): sensorThread.join()
-        aiomqtt.disconnect()
+        #aiomqtt.disconnect()
         awsiot.disconnect()
 
 
