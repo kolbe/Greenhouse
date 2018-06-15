@@ -72,6 +72,7 @@ def awsiotmessage(client, userdata, message):
 class Every(threading.Thread):
     def __init__(self, delay, task):
         threading.Thread.__init__(self)
+        self.daemon = True
         self.shutdown_flag = threading.Event()
 
         self.delay = delay
@@ -341,6 +342,7 @@ def main():
 
     envResult = Array('d', 2)
     sensorProc = Process(target=pollSensor, args=[envResult])
+    sensorProc.daemon = True
     sensorProc.start()
 
     tempAlarm = Alarm()
@@ -386,6 +388,7 @@ def main():
         #aiomqtt.on_disconnect = disconnected
         #aiomqtt.on_message = message
 
+        
         awsiot.connect()
         awsiot.subscribe(str("Greenhouse/Cmds"), 1, awsiotmessage)
 
@@ -411,16 +414,25 @@ def main():
                 stat.paint(draw, i)
                 msg.paint(draw, i)
                 i += 1
-    except ServiceExit: return
-    except:
-        #sys.stderr.write('ERROR: %sn' % str(err))
+    except ServiceExit:
+        return(0)
+    except Exception as e:
+        #sys.stderr.write("Look, a sad thing happened...\n")
+        #sys.stderr.write(str(e))
         raise
-
+    #except AWSIoTPythonSDK.exception.AWSIoTExceptions.disconnectError:
+    #    sys.stderr.write('ERROR: could not connect to AWS IOT service')
+    #    return(1)
+    #except:
+    #    #sys.stderr.write('ERROR: %sn' % str(err))
+    #    raise
+    #    return
     finally:
         sensorThread.shutdown_flag.set()
         if sensorThread.isAlive(): sensorThread.join()
         #aiomqtt.disconnect()
-        awsiot.disconnect()
+        #awsiot.disconnect()
+        #awsiotShadow.disconnect()
 
 
 if __name__ == "__main__":
