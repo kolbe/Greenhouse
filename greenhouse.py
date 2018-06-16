@@ -10,8 +10,9 @@ from decimal import *
 import os
 import sys
 import json
-import threading
+import random
 import signal
+import threading
 from multiprocessing import Process, Array
 import time
 import traceback
@@ -19,9 +20,8 @@ import traceback
 from PIL import Image, ImageDraw, ImageFont
 
 import RPi.GPIO as GPIO
-from Adafruit_SHT31 import *
-import Adafruit_DHT
-#from Adafruit_IO import *
+import Adafruit_SHT31 as SHT
+import Adafruit_DHT as DHT
 from AWSIoTPythonSDK.MQTTLib import AWSIoTMQTTClient, AWSIoTMQTTShadowClient
 
 from luma.core.render import canvas
@@ -34,34 +34,16 @@ sys.stdout = unbuffered
 tempAlarmMin = Decimal('40.0')
 tempAlarmMax = Decimal('100.0')
 
-device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24), rotate=2)
+device = ssd1306(spi(device=0, port=0, gpio_DC=23, gpio_RST=24), rotate=0)
 dw = device.width
 dh = device.height
 
-sensorSHT = SHT31(address=0x44)
-sensorDHT = Adafruit_DHT.AM2302
+sensorSHT = SHT.SHT31(address=0x44)
+sensorDHT = DHT.AM2302
 sensorDHTpin = 27
 
 green_pin = 17
 black_pin = 18
-
-aio_key = os.environ['AIO_KEY']
-aio_user = os.environ['AIO_USER']
-
-default_cmd_json = '{"cmd":"message","value":[{"font":"butterfly.ttf", "msg":"A"},{"font":"arista_light.ttf","msg":"I love you, mom!"},{"font":"jandaflowerdoodles.ttf","msg":"A"}]}'
-
-
-def aio_connected(client):
-    print 'Connected to Adafruit IO!  Listening for Greenhouse Commands...'
-    client.subscribe('GreenhouseCmds')
-def aio_disconnected(client):
-    # Disconnected function will be called when the client disconnects.
-    print 'Disconnected from Adafruit IO!'
-    sys.exit(1)
-def aio_message(client, feed_id, payload, retain):
-    print 'Adafruit IO Feed {0} received new value: {1}'.format(feed_id, payload)
-    if feed_id == 'GreenhouseCmds':
-        execCmd(payload)
 
 def awsiotmessage(client, userdata, message):
     print 'AWS IoT Feed {0} received new value: {1}'.format(message.topic, message.payload)
@@ -108,14 +90,14 @@ class Alarm(object):
         self.alarmPwm.start(50)
         start = time.time()
         while time.time() < start + self.duration:
-            for dc in [4000, 5500]: #range(3000, 7000, 200):
+            for dc in [4000, 5500]:
                 self.alarmPwm.ChangeFrequency(dc)
                 time.sleep(0.5)
         self.alarmPwm.stop()
         self.active = False
 
-
-class ServiceExit(Exception): pass
+class ServiceExit(Exception):
+    pass
 
 def service_shutdown(signum, frame):
     print 'Caught signal {}'.format(signum)
@@ -138,8 +120,9 @@ def make_font(name, size):
     return ImageFont.truetype(font_path, size)
 
 fonts = {}
-fonts["status"] = make_font(status_font_file, 20)
-fonts["font"] = make_font(font_file, 44)
+fonts["status"] = make_font(status_font_file, 32)
+fonts["font"] = make_font(font_file, 32)
+fonts["butterfly"] = make_font('butterfly.ttf', 32)
 
 class MessageChar(object):
     def __init__(self, c, font, w, h):
@@ -209,7 +192,7 @@ class StatusMessage(MessageString):
             if x > dw:
                 x -= c.w
                 continue
-            draw.text((x, 0), c.c, font=c.font, fill=255)
+            draw.text((x, -5), c.c, font=c.font, fill=255)
             x -= c.w
 
 def updateMsg(msg_parts):
@@ -219,7 +202,7 @@ def updateMsg(msg_parts):
             f = fonts[string["font"]]
         else:
             try:
-                f = make_font(string["font"], 44)
+                f = make_font(string["font"], 32)
             except:
                 print "Could not load font {}".format(string["font"])
                 f = fonts["font"]
@@ -264,7 +247,7 @@ def shadowDelta(payload, responseStatus, token):
 def pollSensor(result):
     while True:
         def readDHT():
-            humidity, temperature = Adafruit_DHT.read_retry(sensorDHT, sensorDHTpin, delay_seconds=0.2, retries=5)
+            humidity, temperature = DHT.read_retry(sensorDHT, sensorDHTpin, delay_seconds=0.2, retries=5)
             if humidity is not None and temperature is not None:
                 temperature = temperature * 9/5 + 32
                 #print "Got new stats! Temp {} and humidity {}".format(temperature, humidity)
@@ -302,15 +285,13 @@ def black_button_press(channel):
     print "Black button pressed"
 
 def green_button_press(channel):
-    print "Green button pressed"
+    print "Green button pressed!"
+    msg.append(Text(chr(random.randrange(97, 122)), fonts['butterfly']))
 
 
 def main():
     global msg
     msg = MainMessage(device)
-
-    #aiorest = Client(aio_key)
-    #aiomqtt = MQTTClient(aio_user, aio_key)
 
     awsClientId = "BaskGreenhouseDevice"
     awsThingId = "BaskGreenhouse"
@@ -359,7 +340,9 @@ def main():
             self.d = Decimal(degrees).quantize(self.quant)
             self.h = Decimal(humidity).quantize(self.quant)
             self.ds = str(self.d)
+            self.di = int(round(self.d,0))
             self.hs = str(self.h)
+            self.hi = int(round(self.h,0))
 
     sen = SensorReading()
 
@@ -368,27 +351,19 @@ def main():
         if (sen.d < tempAlarmMin or sen.d > tempAlarmMax) and not tempAlarm.active:
             print "Alarming! {} between {} and {}".format(sen.d, tempAlarmMin, tempAlarmMax)
             #tempAlarm.alarm()
-        #aiomqtt.publish('GreenhouseTemp', sen.ds)
-        #aiomqtt.publish('GreenhouseHumidity', sen.hs)
         awsiot.publish('Greenhouse/Stats', json.dumps({"ts":time.time(), "d":sen.ds, "h":sen.hs}, separators=(',', ':')), 0)
         #print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
         stat.reset()
-        stat.append(Text('{}ºF, {}%'.format(sen.ds, sen.hs), fonts["status"]))
+        stat.append(Text('{}ºF, {}%'.format(sen.di, sen.hi), fonts["status"]))
 
     signal.signal(signal.SIGTERM, service_shutdown)
     signal.signal(signal.SIGINT, service_shutdown)
 
     try:
-        updateMsg([{"font":"font", "msg":"x y z"}])
         sensorThread = Every(5, readSensor)
 
-        #aiomqtt.connect()
-        #aiomqtt.loop_background()
-        #aiomqtt.on_connect = connected
-        #aiomqtt.on_disconnect = disconnected
-        #aiomqtt.on_message = message
+        sensorThread.start()
 
-        
         awsiot.connect()
         awsiot.subscribe(str("Greenhouse/Cmds"), 1, awsiotmessage)
 
@@ -397,43 +372,22 @@ def main():
         deviceShadowHandler.shadowGet(shadowGet, 5)
         deviceShadowHandler.shadowRegisterDeltaCallback(shadowDelta)
 
-        sensorThread.start()
-
-        '''
-        last_cmd = str(aiorest.receive('GreenhouseCmds').value)
-        if last_cmd:
-            print "Read previous GreenhouseCmd of {}".format(last_cmd)
-            execCmd(last_cmd)
-        else:
-            execCmd(default_cmd_json)
-        '''
-
         i = 0L
         while True:
             with canvas(device) as draw:
                 stat.paint(draw, i)
                 msg.paint(draw, i)
                 i += 1
+
     except ServiceExit:
-        return(0)
+        return 0
     except Exception as e:
-        #sys.stderr.write("Look, a sad thing happened...\n")
-        #sys.stderr.write(str(e))
         raise
-    #except AWSIoTPythonSDK.exception.AWSIoTExceptions.disconnectError:
-    #    sys.stderr.write('ERROR: could not connect to AWS IOT service')
-    #    return(1)
-    #except:
-    #    #sys.stderr.write('ERROR: %sn' % str(err))
-    #    raise
-    #    return
     finally:
         sensorThread.shutdown_flag.set()
         if sensorThread.isAlive(): sensorThread.join()
-        #aiomqtt.disconnect()
         #awsiot.disconnect()
         #awsiotShadow.disconnect()
-
 
 if __name__ == "__main__":
     try:
