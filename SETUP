@@ -1,0 +1,3 @@
+apt update
+apt install screen vim python python3 build-essential python-pip python-dev python-smbus git libjpeg-dev
+pip install --upgrade Adafruit_DHT Adafruit_SHT31 RPi.GPIO AWSIoTPythonSDK luma.oled
