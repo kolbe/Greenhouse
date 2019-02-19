@@ -1,3 +1,12 @@
-apt update
-apt install screen vim python python3 build-essential python-pip python-dev python-smbus git libjpeg-dev
-pip install --upgrade Adafruit_DHT Adafruit_SHT31 RPi.GPIO AWSIoTPythonSDK luma.oled
+sudo passwd -d pi
+mkdir -p ~/.ssh/
+tee ~/.ssh/authorized_keys <<<"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCqb8bh9veMZnuV+COWJDCH7fjeeqBZeFc4x3FOel0VBSoaR4pvYa+2mqsV7JTCV982YrKOuGNR1++bEQlw9d7gRQYkksuUSEHYLqK4DbEsh6X4Co2u2qCLJcgDJdbcbj1UVOsgWSjpS6chaeYqEDDV0hxLE/1wwKKr/iOoI1gRoSvN0V4zjM1UgYGYJvmbcfb7Kfuh/heFX2XsFeXwgFMXCv3XK1bMEgDDvHMOb4MIfcUThrjrOBR+Hve7vObLYBsKtsC/uI5u4tGLJqfeZyKtETYb3cjgWCQ1QEt3+zI3tlhpqEBrYECd7ldWeYrJpbFwaW2g0GBWNgtymEvfCWLj kolbe@retsina"
+chmod 600 ~/.ssh/authorized_keys
+
+sudo tee /etc/hostname <<<"greenhouse"
+
+sudo -H apt update
+sudo -H apt install screen vim python python3 build-essential python-pip python-dev python-smbus git libjpeg-dev
+sudo -H pip install --upgrade Adafruit_DHT Adafruit_SHT31 RPi.GPIO AWSIoTPythonSDK luma.oled
+
+echo ***RESET PASSWORD***
