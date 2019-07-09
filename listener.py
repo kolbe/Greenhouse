@@ -23,17 +23,25 @@ awsiot.configureEndpoint(os.environ['AWSIOT_ENDPOINT'], 443)
 awsiot.configureCredentials("/usr/share/ca-certificates/extra/AmazonRootCA1.pem")
 awsiot.configureIAMCredentials(creds.access_key, creds.secret_key, creds.token)
 
-def newMessage(client, userdata, message):
-    try:
-        j = json.loads(message.payload.decode('utf-8'))
-        data = {'ts':j['ts'], 'd':j['d'], 'h':j['h']}
-        #print("{}: new reading at {} of {}ºF and {}%".format(message.topic, time.ctime(j['ts']), j['d'], j['h']))
-        cursor.execute(ins, data)
-        db.commit()
-    except Exception as e:
-        print("Error handling new sensor message!")
-        traceback.print_exc()
 
+def newMessage(client, userdata, message):
+    global cursor
+    j = json.loads(message.payload.decode('utf-8'))
+    data = {'ts':j['ts'], 'd':j['d'], 'h':j['h']}
+    #print("{}: new reading at {} of {}ºF and {}%".format(message.topic, time.ctime(j['ts']), j['d'], j['h']))
+    while True:
+        try:
+            cursor.execute(ins, data)
+            db.commit()
+        except mariadb.errors.DatabaseError as e:
+            print("DatabaseError: {} ... reconnecting.".format(e))
+            db.reconnect(attempts=99999, delay=1)
+            cursor = db.cursor()
+            continue
+        except Exception as e:
+            print("Error handling new sensor message!")
+            traceback.print_exc()
+        break
 
 awsiot.connect()
 awsiot.subscribe("Greenhouse/Stats", 1, newMessage)
