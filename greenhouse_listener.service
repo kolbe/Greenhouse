@@ -1,0 +1,15 @@
+[Unit]
+Description=Greenhouse Listener service
+After=network-online.target
+
+[Service]
+EnvironmentFile=/home/kolbe/.env_credentials
+
+ExecStart=/home/kolbe/git/kolbe/greenhouse/listener.py
+
+# Restart every >2 seconds to avoid StartLimitInterval failure
+RestartSec=3
+Restart=always
+
+[Install]
+WantedBy=default.target

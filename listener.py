@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3 -u
 # coding: utf-8
 
 import os
@@ -25,19 +25,19 @@ awsiot.configureIAMCredentials(creds.access_key, creds.secret_key, creds.token)
 
 def newMessage(client, userdata, message):
     try:
-        j = json.loads(message.payload)
+        j = json.loads(message.payload.decode('utf-8'))
         data = {'ts':j['ts'], 'd':j['d'], 'h':j['h']}
-        print "{}: new reading at {} of {}ºF and {}%".format(message.topic, time.ctime(j['ts']), j['d'], j['h'])
+        #print("{}: new reading at {} of {}ºF and {}%".format(message.topic, time.ctime(j['ts']), j['d'], j['h']))
         cursor.execute(ins, data)
         db.commit()
     except Exception as e:
-        print "Error handling new sensor message!"
+        print("Error handling new sensor message!")
         traceback.print_exc()
 
 
 awsiot.connect()
 awsiot.subscribe("Greenhouse/Stats", 1, newMessage)
-print "Subscribed!"
+print("Subscribed!")
 
 while True:
     time.sleep(1)
