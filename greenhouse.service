@@ -1,13 +1,17 @@
 [Unit]
 Description=Greenhouse Service
-Requires=network-online.target
-After=network-online.target
+Requires=network-online.target time-sync.target
+After=network-online.target time-sync.target
 
 [Service]
 Type=simple
+
 Restart=always
+RestartSec=3
+
 ExecStart=/usr/local/sbin/greenhouse.py
 EnvironmentFile=/etc/systemd/system/greenhouse.env
+
 StandardOutput=journal
 StandardError=journal
 
