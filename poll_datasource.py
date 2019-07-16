@@ -9,6 +9,7 @@ db = mariadb.connect(user='greenhouse', password='', database='greenhouse')
 cursor = db.cursor()
 
 stmt = "select grp*60 ts, round(avg(temp),1) d, round(avg(humidity),1) h from sensorReadings where grp > %s/60 group by grp"
+#stmt = "select unix_timestamp(t), temp, humidity from sensorReadings where t > %s"
 
 qs = urlparse.parse_qs(os.environ.get('QUERY_STRING',''))
 
