@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import random
+import datetime
 import signal
 import threading
 from multiprocessing import Process, Array
@@ -346,12 +347,17 @@ def main():
 
     sen = SensorReading()
 
+    datafile = open('/home/pi/sensor.data', 'a', 1)
     def readSensor():
         sen.update(*envResult)
+        if (sen.di == 0 and sen.hi == 0):
+            print "Temperature and Humidity are both 0, skipping!"
+            return
         if (sen.d < tempAlarmMin or sen.d > tempAlarmMax) and not tempAlarm.active:
             print "Alarming! {} between {} and {}".format(sen.d, tempAlarmMin, tempAlarmMax)
             #tempAlarm.alarm()
         awsiot.publish('Greenhouse/Stats', json.dumps({"ts":time.time(), "d":sen.ds, "h":sen.hs}, separators=(',', ':')), 0)
+        datafile.write('\t'.join([ datetime.datetime.now().isoformat(), sen.ds, sen.hs ]) + '\n')
         #print "Read temp of {} and humidity of {}".format(sen.ds, sen.hs)
         stat.reset()
         stat.append(Text('{}ºF, {}%'.format(sen.di, sen.hi), fonts["status"]))
