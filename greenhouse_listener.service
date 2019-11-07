@@ -1,0 +1,15 @@
+[Unit]
+Description=Greenhouse Listener service
+After=network-online.target
+
+[Service]
+Environment="AWSIOT_ENDPOINT=a2yxri182dok32-ats.iot.us-east-1.amazonaws.com"
+
+ExecStart=/home/kolbe/git/kolbe/greenhouse/listener.py
+
+# Restart every >2 seconds to avoid StartLimitInterval failure
+RestartSec=3
+Restart=always
+
+[Install]
+WantedBy=default.target
